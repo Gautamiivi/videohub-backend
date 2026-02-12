@@ -9,21 +9,29 @@ const router = express.Router();
 
 /* =========================
    Multer configuration
+   Use memory storage for Vercel serverless compatibility
 ========================= */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, path.resolve(__dirname, "../uploads"));
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + "-" + file.originalname);
+const storage = process.env.NODE_ENV === "production" 
+  ? multer.memoryStorage()  // Vercel serverless: store in memory
+  : multer.diskStorage({    // Local: store to disk
+      destination: (req, file, cb) => {
+        cb(null, path.resolve(__dirname, "../uploads"));
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        cb(null, uniqueSuffix + "-" + file.originalname);
+      },
+    });
+
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB limit
   },
 });
-
-const upload = multer({ storage });
 
 /* =========================
    GET ALL VIDEOS
@@ -52,6 +60,19 @@ router.post("/upload", auth, upload.single("video"), async (req, res) => {
       return res.status(400).json({ message: "Title is required" });
     }
 
+    // For Vercel serverless, we can't save files to disk
+    // In production, you'd upload to cloud storage (AWS S3, Cloudinary, etc.)
+    if (process.env.NODE_ENV === "production") {
+      // For Vercel: Just save metadata, file would need cloud storage
+      console.log("Video upload in Vercel - file would need cloud storage");
+      return res.status(201).json({
+        title,
+        message: "Video upload requires cloud storage configuration",
+        note: "Configure AWS S3 or Cloudinary for production video storage"
+      });
+    }
+
+    // For local development: save to disk
     const video = await Video.create({
       title,
       filename: req.file.filename,
@@ -61,7 +82,7 @@ router.post("/upload", auth, upload.single("video"), async (req, res) => {
     res.status(201).json(video);
   } catch (err) {
     console.error("Upload error:", err);
-    res.status(500).json({ message: "Upload failed" });
+    res.status(500).json({ message: "Upload failed: " + err.message });
   }
 });
 
