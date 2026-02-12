@@ -15,6 +15,43 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/* MongoDB Connection for Vercel Serverless */
+const connectDB = async () => {
+  if (mongoose.connection.readyState === 1) {
+    console.log("MongoDB already connected");
+    return;
+  }
+
+  try {
+    const mongoURI = process.env.MONGO_URI;
+    
+    if (!mongoURI) {
+      console.error("MONGO_URI not defined in environment variables");
+      return;
+    }
+
+    console.log("Attempting MongoDB connection...");
+    
+    await mongoose.connect(mongoURI, {
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+
+    console.log("MongoDB connected successfully ✅");
+    
+    mongoose.connection.on("error", (err) => {
+      console.error("MongoDB connection error:", err);
+    });
+
+    mongoose.connection.on("disconnected", () => {
+      console.warn("MongoDB disconnected");
+    });
+
+  } catch (error) {
+    console.error("MongoDB connection failed:", error.message);
+  }
+};
+
 /* CORS */
 const allowedOrigins = [
   "http://localhost:5173",
@@ -67,11 +104,24 @@ app.use("/uploads", (req, res, next) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/videos", videoRoutes);
 
-/* Health check */
-app.get("/health", (_req, res) => {
+/* Health check with DB status */
+app.get("/health", async (_req, res) => {
+  let mongoStatus = "disconnected";
+  try {
+    if (mongoose.connection.readyState === 1) {
+      mongoStatus = "connected";
+    } else if (mongoose.connection.readyState === 2) {
+      mongoStatus = "connecting";
+    } else if (mongoose.connection.readyState === 3) {
+      mongoStatus = "disconnecting";
+    }
+  } catch (e) {
+    mongoStatus = "error";
+  }
+  
   res.json({
     status: "OK",
-    mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    mongodb: mongoStatus,
     timestamp: new Date().toISOString(),
   });
 });
@@ -90,13 +140,31 @@ app.use((err, _req, res, _next) => {
   });
 });
 
-/* Start server for local development */
+/* Connect to DB and start server for local development only */
 const PORT = process.env.PORT || 5002;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`   Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`   MongoDB: ${mongoose.connection.readyState === 1 ? "Connected" : "Connecting..."}`);
-});
+if (process.env.NODE_ENV !== "production") {
+  connectDB().then(() => {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`   Environment: ${process.env.NODE_ENV || "development"}`);
+      console.log(`   MongoDB: ${mongoose.connection.readyState === 1 ? "Connected" : "Not connected"}`);
+    });
+  });
+}
 
-/* Export for Vercel serverless */
-export default app;
+/* Export for Vercel serverless with DB connection */
+export default async function handler(req, res) {
+  // Connect to DB on each request for serverless
+  await connectDB();
+  
+  // Handle preflight requests
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    return res.status(200).end();
+  }
+
+  // Handle request
+  return app(req, res);
+}
