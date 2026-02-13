@@ -14,9 +14,14 @@ const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const storage = process.env.NODE_ENV === "production" 
-  ? multer.memoryStorage()  // Vercel serverless: store in memory
-  : multer.diskStorage({    // Local: store to disk
+const isServerlessRuntime =
+  process.env.VERCEL === "1" ||
+  !!process.env.AWS_LAMBDA_FUNCTION_NAME ||
+  process.env.NODE_ENV === "production";
+
+const storage = isServerlessRuntime
+  ? multer.memoryStorage() // Vercel/Lambda: do not write to project filesystem
+  : multer.diskStorage({   // Local: store to disk
       destination: (req, file, cb) => {
         cb(null, path.resolve(__dirname, "../uploads"));
       },
@@ -49,7 +54,20 @@ router.get("/", auth, async (req, res) => {
 /* =========================
    UPLOAD VIDEO
 ========================= */
-router.post("/upload", auth, upload.single("video"), async (req, res) => {
+router.post("/upload", auth, (req, res, next) => {
+  upload.single("video")(req, res, (err) => {
+    if (!err) return next();
+
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({ message: "Video is too large. Max size is 100MB." });
+      }
+      return res.status(400).json({ message: err.message });
+    }
+
+    return res.status(500).json({ message: "Upload middleware failed: " + err.message });
+  });
+}, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: "No video file provided" });
@@ -60,16 +78,46 @@ router.post("/upload", auth, upload.single("video"), async (req, res) => {
       return res.status(400).json({ message: "Title is required" });
     }
 
-    // For Vercel serverless, we can't save files to disk
-    // In production, you'd upload to cloud storage (AWS S3, Cloudinary, etc.)
-    if (process.env.NODE_ENV === "production") {
-      // For Vercel: Just save metadata, file would need cloud storage
-      console.log("Video upload in Vercel - file would need cloud storage");
-      return res.status(201).json({
-        title,
-        message: "Video upload requires cloud storage configuration",
-        note: "Configure AWS S3 or Cloudinary for production video storage"
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET;
+
+    // In serverless, upload file buffer to cloud storage if configured.
+    if (isServerlessRuntime) {
+      if (!cloudName || !uploadPreset) {
+        return res.status(501).json({
+          title,
+          message: "Video storage is not configured for production yet.",
+          note: "Set CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET in backend Vercel env."
+        });
+      }
+
+      const cloudinaryUrl = `https://api.cloudinary.com/v1_1/${cloudName}/video/upload`;
+      const form = new FormData();
+      const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "application/octet-stream" });
+
+      form.append("file", blob, req.file.originalname || "video.mp4");
+      form.append("upload_preset", uploadPreset);
+      form.append("resource_type", "video");
+
+      const cloudResp = await fetch(cloudinaryUrl, {
+        method: "POST",
+        body: form,
       });
+
+      const cloudData = await cloudResp.json();
+      if (!cloudResp.ok || !cloudData.secure_url) {
+        return res.status(502).json({
+          message: cloudData?.error?.message || "Cloudinary upload failed",
+        });
+      }
+
+      const video = await Video.create({
+        title,
+        filename: req.file.originalname,
+        videoUrl: cloudData.secure_url,
+      });
+
+      return res.status(201).json(video);
     }
 
     // For local development: save to disk
