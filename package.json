@@ -2,11 +2,11 @@
   "name": "videohub-backend",
   "version": "1.0.0",
   "type": "module",
-  "main": "server.js",
+  "main": "vercel.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "vercel-start":"node server.js"
+    "vercel-start": "node vercel.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
