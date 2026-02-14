@@ -121,6 +121,7 @@ app.get("/health", async (_req, res) => {
   
   res.json({
     status: "OK",
+    backendVersion: "cloudinary-v2",
     mongodb: mongoStatus,
     timestamp: new Date().toISOString(),
   });

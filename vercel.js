@@ -67,6 +67,7 @@ app.get("/health", async (_req, res) => {
   const mongoStatus = mongoose.connection.readyState === 1 ? "connected" : "disconnected";
   res.json({
     status: "OK",
+    backendVersion: "cloudinary-v2",
     mongodb: mongoStatus,
     timestamp: new Date().toISOString(),
   });
